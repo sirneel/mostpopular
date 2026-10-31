@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>MostPopular — who’s popular right now</title>
+<style>
+:root{--bg:#0b1020;--card:#131a2e;--bd:#222c47;--fg:#f1f5f9;--mu:#94a3b8;--ac:#fbbf24;--bl:#38bdf8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header,main,#banner{max-width:640px;margin:0 auto;padding:12px 16px}
+header{display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--bg);z-index:5}
+h1{margin:0;font-size:20px}h1 b{color:var(--ac)}
+.chip{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--mu);background:var(--card);border:1px solid var(--bd);border-radius:99px;padding:6px 12px}
+.pip{width:9px;height:9px;border-radius:50%;background:var(--bd)}.pip.on{background:var(--ac)}
+.filters{display:flex;gap:8px;margin-bottom:12px}
+select,textarea,button{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 12px}
+select{flex:1;min-width:0}
+button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}
+button.vote{background:var(--ac);color:#111;border-color:var(--ac);font-weight:700}
+ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.row{display:grid;grid-template-columns:28px 44px 1fr auto;gap:10px;align-items:center;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:10px}
+.row.top{border-color:var(--ac)}
+.rk{font-weight:800;color:var(--mu);text-align:center}.top .rk{color:var(--ac)}
+.av{width:44px;height:44px;border-radius:50%;background:#26324f;display:grid;place-items:center;font-weight:700;overflow:hidden}.av img{width:100%;height:100%;object-fit:cover}
+.in{min-width:0}.nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ok{color:var(--bl)}
+.sub{font-size:12px;color:var(--mu)}
+.act{display:flex;flex-direction:column;gap:6px}.act button{padding:6px 10px;font-size:13px}
+.empty{text-align:center;color:var(--mu);padding:32px 8px}
+#banner{font-size:13px;color:var(--ac)}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:#1e293b;border:1px solid var(--bd);padding:10px 16px;border-radius:12px;opacity:0;transition:.2s;pointer-events:none;max-width:90vw;z-index:20}
+#toast.on{opacity:1;transform:translate(-50%,0)}#toast.bad{border-color:#f87171}
+dialog{background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:16px;width:min(92vw,420px);padding:16px}
+dialog::backdrop{background:#000a}
+#preview{overflow-x:auto;margin-bottom:12px;min-height:96px}#preview svg{max-width:100%;height:auto}
+textarea{width:100%;font:12px ui-monospace,monospace;resize:none;margin-bottom:6px}
+.hint{font-size:12px;color:var(--mu);margin:0 0 10px}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>Most<b>Popular</b></h1>
+  <div id="votes" class="chip" aria-live="polite">…</div>
+</header>
+<div id="banner" hidden></div>
+<main>
+  <div class="filters"><select id="country" aria-label="Country"></select><select id="category" aria-label="Category"></select></div>
+  <ol id="list"></ol>
+</main>
+
+<dialog id="badge">
+  <div id="preview"></div>
+  <div class="filters">
+    <select id="scope" aria-label="Rank scope">
+      <option value="category_country">Category in country</option>
+      <option value="country">Country</option>
+      <option value="global">Worldwide</option>
+    </select>
+    <select id="theme" aria-label="Theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+  </div>
+  <textarea id="code" readonly rows="3" aria-label="Embed code"></textarea>
+  <p class="hint">The live URL needs the /badge route (Cloudflare Worker). Until then, download the SVG.</p>
+  <div class="btns"><button id="copy">Copy embed</button><button id="dl">Download SVG</button><button id="close">Close</button></div>
+</dialog>
+<div id="toast" role="status"></div>
+
+<script type="module">
+import { stateFromVotes, rankFigures, displayPoints } from './decay.js';
+import { renderBadgeSVG, badgeEmbedCode, badgeInputFromRows } from './badge.js';
+
+/* ---- CONFIG: Live Supabase connection ---- */
+const CONFIG = { 
+  url: 'https://elgnrxadaaemugxdpbqz.supabase.co', 
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVsZ25yeGFkYWFlbXVneGRwYnF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzOTUyNjgsImV4cCI6MjEwODk3MTI2OH0.FG_JgwKyNpcb3hEaY5GHwUcs_rkoF4ibGX_RPX1h9-M' 
+};
+const SUPABASE_ESM = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
+
+const COUNTRIES = ['ZA', 'NG', 'KE', 'GH', 'US', 'GB', 'IN', 'BR'];
+const CATEGORIES = ['creator', 'athlete', 'musician', 'politician', 'business', 'academic', 'other'];
+const MSG = {
+  daily_limit_reached: 'You’ve used all 3 votes. A slot frees up 24h after your oldest vote.',
+  already_voted_recently: 'You already voted for them in the last 24 hours.',
+  cannot_vote_for_own_figure: 'You can’t vote for yourself.',
+  rate_limited: 'Slow down — wait a few seconds.',
+  pow_expired: 'That took too long. Try again.',
+  pow_invalid: 'Verification failed. Try again.',
+  banned: 'Voting is paused for this account.',
+};
+
+const $ = (s) => document.querySelector(s);
+const h = (t, c, ...kids) => { const e = document.createElement(t); if (c) e.className = c; for (const k of kids) if (k != null && k !== false) e.append(k); return e; };
+const rn = new Intl.DisplayNames(['en'], { type: 'region' });
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const explain = (e) => { const m = String(e?.message ?? e); const k = Object.keys(MSG).find((x) => m.includes(x)); return k ? MSG[k] : 'Something went wrong. Please try again.'; };
+const eta = (iso) => { const m = Math.max(0, Math.round((new Date(iso) - Date.now()) / 6e4)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`; };
+let toastTimer;
+function toast(msg, bad = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'on' + (bad ? ' bad' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ''), 3200);
+}
+
+/* ---- Proof of work: sha256(uid:figure:ms:nonce) must start with 4 hex zeros (matches schema.sql) ---- */
+const POW_SRC = `const enc=new TextEncoder();onmessage=async({data:{prefix}})=>{for(let n=0;;n++){const h=new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(prefix+n.toString(36))));if(h[0]===0&&h[1]===0){postMessage(n.toString(36));return}}}`;
+function mine(uid, figureId) {
+  const ms = Date.now();
+  const url = URL.createObjectURL(new Blob([POW_SRC], { type: 'text/javascript' }));
+  const w = new Worker(url);
+  return new Promise((ok, no) => {
+    const done = () => { w.terminate(); URL.revokeObjectURL(url); };
+    w.onmessage = (e) => { done(); ok({ ms, nonce: e.data }); };
+    w.onerror = () => { done(); no(new Error('pow_failed')); };
+    w.postMessage({ prefix: `${uid}:${figureId}:${ms}:` });
+  });
+}
+
+/* ---- Backends (same interface): Supabase, or localStorage demo ---- */
+async function makeRemote() {
+  const { createClient } = await import(SUPABASE_ESM);
+  const sb = createClient(CONFIG.url, CONFIG.anonKey);
+  let { data: { session } } = await sb.auth.getSession();
+  if (!session) { const r = await sb.auth.signInAnonymously(); if (r.error) throw r.error; session = r.data.session; }
+  const must = ({ data, error }) => { if (error) throw error; return data; };
+  return {
+    uid: session.user.id,
+    leaderboard: (c, k) => sb.rpc('leaderboard', { p_country: c || null, p_category: k || null, p_limit: 50 }).then(must),
+    status: () => sb.rpc('my_vote_status').single().then(must),
+    ranks: (id) => sb.rpc('figure_ranks', { p_figure: id }).single().then(must),
+    vote: async (id, pow) => { const r = await sb.from('votes').insert({ figure_id: id, pow_ms: pow.ms, pow_nonce: pow.nonce }); if (r.error) throw r.error; },
+    subscribe: (cb) => sb.channel('figs').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'figures' }, cb).subscribe(),
+  };
+}
+
+function makeLocal() {
+  const KEY = 'mp.demo.votes', DAY = 864e5, now = Date.now();
+  const SEED = [
+    ['thandi-m', 'Thandi Mokoena', 'creator', 'ZA', true, [[0.3, 30], [3, 40], [25, 90]]],
+    ['kwame-b', 'Kwame Boateng', 'musician', 'GH', true, [[1, 55], [10, 60]]],
+    ['lerato-s', 'Lerato Sithole', 'athlete', 'ZA', false, [[0.1, 70], [2, 20]]],
+    ['amara-o', 'Amara Okafor', 'creator', 'NG', true, [[5, 50], [40, 120]]],
+    ['sam-w', 'Sam Whitaker', 'business', 'GB', false, [[0.5, 15], [14, 45]]],
+    ['priya-n', 'Priya Nair', 'academic', 'IN', true, [[2, 25], [30, 70]]],
+  ];
+  const figs = SEED.map(([slug, display_name, category, country_code, verified, bursts]) => ({
+    id: slug, slug, display_name, avatar_url: null, category, country_code, verified,
+    seed: bursts.flatMap(([age, n]) => Array.from({ length: n }, (_, i) => ({ t: now - (age + (i / n) * 0.5) * DAY }))),
+  }));
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } };
+  const recent = () => load().filter((v) => v.t > Date.now() - DAY);
+  const build = (list) => { const m = load(); return rankFigures(list.map((f) => ({ ...f, ...stateFromVotes([...f.seed, ...m.filter((v) => v.id === f.id)]) }))); };
+  return {
+    uid: 'local',
+    async leaderboard(c, k) {
+      return build(figs.filter((f) => (!c || f.country_code === c) && (!k || f.category === k)))
+        .map(({ seed, lf, ls, ...row }) => row);
+    },
+    async status() {
+      const r = recent(), used = r.length;
+      return { used, remaining: Math.max(0, 3 - used), next_slot_at: used >= 3 ? new Date(Math.min(...r.map((v) => v.t)) + DAY).toISOString() : null };
+    },
+    async ranks(id) {
+      const all = build(figs), me = all.find((f) => f.id === id);
+      const rk = (a) => 1 + a.filter((f) => f.score > me.score).length;
+      const sameC = all.filter((f) => f.country_code === me.country_code);
+      return { global_rank: rk(all), country_rank: rk(sameC), category_country_rank: rk(sameC.filter((f) => f.category === me.category)), score: me.score };
+    },
+    async vote(id) {
+      const r = recent();
+      if (r.length >= 3) throw new Error('daily_limit_reached');
+      if (r.some((v) => v.id === id)) throw new Error('already_voted_recently');
+      localStorage.setItem(KEY, JSON.stringify([...load(), { id, t: Date.now() }]));
+    },
+    subscribe() {},
+  };
+}
+
+const banner = (msg) => { const b = $('#banner'); b.textContent = msg; b.hidden = false; };
+let be;
+try {
+  if (CONFIG.url.startsWith('YOUR_')) { be = makeLocal(); banner('Demo mode — votes stay on this device. Add your Supabase keys in index.html to go live.'); }
+  else be = await makeRemote();
+} catch (e) {
+  console.error(e); be = makeLocal();
+  banner('Couldn’t reach Supabase — running in offline demo mode.');
+}
+
+/* ---- UI ---- */
+const st = { country: '', category: '', rows: [], status: { used: 0, remaining: 3, next_slot_at: null }, busy: false };
+
+function renderChip() {
+  const s = st.status;
+  $('#votes').replaceChildren(...[0, 1, 2].map((i) => h('i', i < s.remaining ? 'pip on' : 'pip')),
+    h('span', null, s.remaining ? `${s.remaining} left` : `next in ${eta(s.next_slot_at)}`));
+}
+
+function render() {
+  renderChip();
+  const ol = $('#list'); ol.replaceChildren();
+  if (!st.rows.length) { ol.append(h('li', 'empty', 'No ranked figures here yet — be the first to vote.')); return; }
+  const locked = st.status.remaining < 1;
+  for (const r of st.rows) {
+    const ini = r.display_name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+    const av = h('div', 'av', h('span', null, ini));
+    if (r.avatar_url) {
+      const img = new Image(); img.alt = ''; img.referrerPolicy = 'no-referrer';
+      img.onload = () => av.replaceChildren(img);
+      img.src = r.avatar_url;
+    }
+    const vb = h('button', 'vote', 'Vote'); vb.disabled = locked || st.busy; vb.onclick = () => castVote(r);
+    const bb = h('button', null, 'Badge'); bb.onclick = () => openBadge(r);
+    ol.append(h('li', 'row' + (r.rank <= 3 ? ' top' : ''),
+      h('div', 'rk', `#${r.rank}`), av,
+      h('div', 'in',
+        h('div', 'nm', r.display_name, r.verified && h('span', 'ok', ' ✓')),
+        h('div', 'sub', `${cap(r.category)} · ${rn.of(r.country_code)} · ${displayPoints(r.score)} pts`)),
+      h('div', 'act', vb, bb)));
+  }
+}
+
+async function refresh() {
+  try {
+    const [rows, status] = await Promise.all([be.leaderboard(st.country, st.category), be.status()]);
+    st.rows = rows; st.status = status; render();
+  } catch (e) {
+    console.error(e);
+    const retry = h('button', null, 'Retry'); retry.onclick = refresh;
+    $('#list').replaceChildren(h('li', 'empty', 'Couldn’t load the leaderboard. ', retry));
+  }
+}
+
+async function castVote(r) {
+  if (st.busy) return;
+  st.busy = true; render(); toast('Proving you’re human…');
+  try { await be.vote(r.id, await mine(be.uid, r.id)); toast(`Vote counted for ${r.display_name}`); }
+  catch (e) { console.error(e); toast(explain(e), true); }
+  st.busy = false; await refresh();
+}
+
+/* ---- Badge preview ---- */
+let cur = null;
+async function toDataUri(url) {
+  if (!url) return undefined;
+  try {
+    const b = await (await fetch(url, { mode: 'cors' })).blob();
+    return await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(b); });
+  } catch { return undefined; }
+}
+async function openBadge(r) {
+  $('#preview').textContent = 'Rendering…'; $('#badge').showModal();
+  try {
+    const [ranks, avatarDataUri] = await Promise.all([be.ranks(r.id), toDataUri(r.avatar_url)]);
+    cur = { r, ranks, avatarDataUri }; drawBadge();
+  } catch (e) { console.error(e); $('#preview').textContent = 'Couldn’t render the badge.'; }
+}
+function drawBadge() {
+  const { r, ranks, avatarDataUri } = cur;
+  const svg = renderBadgeSVG(badgeInputFromRows(r, ranks, { scope: $('#scope').value, avatarDataUri, theme: $('#theme').value }));
+  cur.svg = svg; $('#preview').innerHTML = svg; // svg is built by badge.js, which escapes all user text
+  $('#code').value = badgeEmbedCode({ svgUrl: `${location.origin}/badge/${r.slug}.svg`, profileUrl: `${location.origin}/#${r.slug}`, alt: `${r.display_name} on MostPopular` }).html;
+}
+$('#scope').onchange = $('#theme').onchange = () => cur && drawBadge();
+$('#close').onclick = () => $('#badge').close();
+$('#copy').onclick = () => navigator.clipboard.writeText($('#code').value).then(() => toast('Embed code copied'), () => toast('Copy failed', true));
+$('#dl').onclick = () => {
+  if (!cur) return;
+  const a = h('a'); a.href = URL.createObjectURL(new Blob([cur.svg], { type: 'image/svg+xml' })); a.download = `${cur.r.slug}-badge.svg`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+/* ---- Init ---- */
+const fill = (sel, opts) => sel.replaceChildren(...opts.map(([v, t]) => { const o = h('option', null, t); o.value = v; return o; }));
+fill($('#country'), [['', 'Worldwide'], ...COUNTRIES.map((c) => [c, rn.of(c)])]);
+fill($('#category'), [['', 'All categories'], ...CATEGORIES.map((c) => [c, cap(c)])]);
+$('#country').onchange = (e) => { st.country = e.target.value; refresh(); };
+$('#category').onchange = (e) => { st.category = e.target.value; refresh(); };
+
+let rt; be.subscribe(() => { clearTimeout(rt); rt = setTimeout(refresh, 800); });
+$('#list').replaceChildren(h('li', 'empty', 'Loading…'));
+refresh();
+setInterval(renderChip, 60000);
+</script>
+</body>
+</html>
